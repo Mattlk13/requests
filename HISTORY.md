@@ -4,9 +4,116 @@ Release History
 dev
 ---
 
+- \[Short description of non-trivial change.\]
+
+- Added a `requests.exceptions.JSONDecodeError` to decrease inconsistencies
+  in the library. This gets raised in the `response.json()` method, and is
+  backwards compatible as it inherits from previously thrown exceptions.
+  Can be caught from `requests.exceptions.RequestException` as well.
+
+2.26.0 (2021-07-13)
+-------------------
+
+**Improvements**
+
+- Requests now supports Brotli compression, if either the `brotli` or
+  `brotlicffi` package is installed. (#5783)
+
+- `Session.send` now correctly resolves proxy configurations from both
+  the Session and Request. Behavior now matches `Session.request`. (#5681)
+
 **Bugfixes**
 
--   \[Short description of non-trivial change.\]
+- Fixed a race condition in zip extraction when using Requests in parallel
+  from zip archive. (#5707)
+
+**Dependencies**
+
+- Instead of `chardet`, use the MIT-licensed `charset_normalizer` for Python3
+  to remove license ambiguity for projects bundling requests. If `chardet`
+  is already installed on your machine it will be used instead of `charset_normalizer`
+  to keep backwards compatibility. (#5797)
+
+  You can also install `chardet` while installing requests by
+  specifying `[use_chardet_on_py3]` extra as follows:
+
+    ```shell
+    pip install "requests[use_chardet_on_py3]"
+    ```
+
+  Python2 still depends upon the `chardet` module.
+
+- Requests now supports `idna` 3.x on Python 3. `idna` 2.x will continue to
+  be used on Python 2 installations. (#5711)
+
+**Deprecations**
+
+- The `requests[security]` extra has been converted to a no-op install.
+  PyOpenSSL is no longer the recommended secure option for Requests. (#5867)
+
+- Requests has officially dropped support for Python 3.5. (#5867)
+
+2.25.1 (2020-12-16)
+-------------------
+
+**Bugfixes**
+
+- Requests now treats `application/json` as `utf8` by default. Resolving
+  inconsistencies between `r.text` and `r.json` output. (#5673)
+
+**Dependencies**
+
+- Requests now supports chardet v4.x.
+
+2.25.0 (2020-11-11)
+------------------
+
+**Improvements**
+
+- Added support for NETRC environment variable. (#5643)
+
+**Dependencies**
+
+- Requests now supports urllib3 v1.26.
+
+**Deprecations**
+
+- Requests v2.25.x will be the last release series with support for Python 3.5.
+- The `requests[security]` extra is officially deprecated and will be removed
+  in Requests v2.26.0.
+
+2.24.0 (2020-06-17)
+-------------------
+
+**Improvements**
+
+- pyOpenSSL TLS implementation is now only used if Python
+  either doesn't have an `ssl` module or doesn't support
+  SNI. Previously pyOpenSSL was unconditionally used if available.
+  This applies even if pyOpenSSL is installed via the
+  `requests[security]` extra (#5443)
+
+- Redirect resolution should now only occur when
+  `allow_redirects` is True. (#5492)
+
+- No longer perform unnecessary Content-Length calculation for
+  requests that won't use it. (#5496)
+
+2.23.0 (2020-02-19)
+-------------------
+
+**Improvements**
+
+- Remove defunct reference to `prefetch` in Session `__attrs__` (#5110)
+
+**Bugfixes**
+
+- Requests no longer outputs password in basic auth usage warning. (#5099)
+
+**Dependencies**
+
+- Pinning for `chardet` and `idna` now uses major version instead of minor.
+  This hopefully reduces the need for releases everytime a dependency is updated.
 
 2.22.0 (2019-05-15)
 -------------------
@@ -629,7 +736,7 @@ Or, even better:
 
 This is the first release that follows our new release process. For
 more, see [our
-documentation](http://docs.python-requests.org/en/latest/community/release-process/).
+documentation](https://requests.readthedocs.io/en/latest/community/release-process/).
 
 **Bugfixes**
 
@@ -1647,4 +1754,3 @@ This is not a backwards compatible change.
 
 -   Frustration
 -   Conception
-

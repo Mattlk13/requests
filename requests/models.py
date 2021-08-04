@@ -29,7 +29,9 @@ from .auth import HTTPBasicAuth
 from .cookies import cookiejar_from_dict, get_cookie_header, _copy_cookie_jar
 from .exceptions import (
     HTTPError, MissingSchema, InvalidURL, ChunkedEncodingError,
-    ContentDecodingError, ConnectionError, StreamConsumedError)
+    ContentDecodingError, ConnectionError, StreamConsumedError,
+    InvalidJSONError)
+from .exceptions import JSONDecodeError as RequestsJSONDecodeError
 from ._internal_utils import to_native_string, unicode_is_ascii
 from .utils import (
     guess_filename, get_auth_from_url, requote_uri,
@@ -38,7 +40,7 @@ from .utils import (
 from .compat import (
     Callable, Mapping,
     cookielib, urlunparse, urlsplit, urlencode, str, bytes,
-    is_py2, chardet, builtin_str, basestring)
+    is_py2, chardet, builtin_str, basestring, JSONDecodeError)
 from .compat import json as complexjson
 from .status_codes import codes
 
@@ -273,7 +275,9 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
     """The fully mutable :class:`PreparedRequest <PreparedRequest>` object,
     containing the exact bytes that will be sent to the server.
 
-    Generated from either a :class:`Request <Request>` object or manually.
+    Instances are generated from a :class:`Request <Request>` object, and
+    should not be instantiated manually; doing so may produce undesirable
+    effects.
 
     Usage::
 
@@ -464,7 +468,12 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
             # urllib3 requires a bytes-like body. Python 2's json.dumps
             # provides this natively, but Python 3 gives a Unicode string.
             content_type = 'application/json'
-            body = complexjson.dumps(json)
+
+            try:
+                body = complexjson.dumps(json, allow_nan=False)
+            except ValueError as ve:
+                raise InvalidJSONError(ve, request=self)
+
             if not isinstance(body, bytes):
                 body = body.encode('utf-8')
 
@@ -473,12 +482,12 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
             not isinstance(data, (basestring, list, tuple, Mapping))
         ])
 
-        try:
-            length = super_len(data)
-        except (TypeError, AttributeError, UnsupportedOperation):
-            length = None
-
         if is_stream:
+            try:
+                length = super_len(data)
+            except (TypeError, AttributeError, UnsupportedOperation):
+                length = None
+
             body = data
 
             if getattr(body, 'tell', None) is not None:
@@ -641,10 +650,6 @@ class Response(object):
         #: is a response.
         self.request = None
 
-        #: If there was an error in the processing of content,
-        #: then save the error that would return the same error when you re-appeal.
-        self._error = None
-
     def __enter__(self):
         return self
 
@@ -728,7 +733,7 @@ class Response(object):
 
     @property
     def apparent_encoding(self):
-        """The apparent encoding, provided by the chardet library."""
+        """The apparent encoding, provided by the charset_normalizer or chardet libraries."""
         return chardet.detect(self.content)['encoding']
 
     def iter_content(self, chunk_size=1, decode_unicode=False):
@@ -754,21 +759,12 @@ class Response(object):
                 try:
                     for chunk in self.raw.stream(chunk_size, decode_content=True):
                         yield chunk
-
                 except ProtocolError as e:
-                    self._error = ChunkedEncodingError(e)
-
+                    raise ChunkedEncodingError(e)
                 except DecodeError as e:
-                    self._error = ContentDecodingError(e)
-
+                    raise ContentDecodingError(e)
                 except ReadTimeoutError as e:
-                    self._error = ConnectionError(e)
-
-                finally:
-                    # if we had an error - throw the saved error
-                    if self._error:
-                        raise self._error
-
+                    raise ConnectionError(e)
             else:
                 # Standard file-like object.
                 while True:
@@ -841,10 +837,6 @@ class Response(object):
             else:
                 self._content = b''.join(self.iter_content(CONTENT_CHUNK_SIZE)) or b''
 
-        # if we had an error - throw the saved error
-        if self._error is not None:
-            raise self._error
-
         self._content_consumed = True
         # don't need to release the connection; that's been handled by urllib3
         # since we exhausted the data.
@@ -855,7 +847,7 @@ class Response(object):
         """Content of the response, in unicode.
 
         If Response.encoding is None, encoding will be guessed using
-        ``chardet``.
+        ``charset_normalizer`` or ``chardet``.
 
         The encoding of the response content is determined based solely on HTTP
         headers, following RFC 2616 to the letter. If you can take advantage of
@@ -873,9 +865,6 @@ class Response(object):
         # Fallback to auto-detected encoding.
         if self.encoding is None:
             encoding = self.apparent_encoding
-        # Forcefully remove BOM from UTF-8
-        elif self.encoding.lower() == 'utf-8':
-            encoding = 'utf-8-sig'
 
         # Decode unicode from given encoding.
         try:
@@ -895,13 +884,14 @@ class Response(object):
         r"""Returns the json-encoded content of a response, if any.
 
         :param \*\*kwargs: Optional arguments that ``json.loads`` takes.
-        :raises ValueError: If the response body does not contain valid json.
+        :raises requests.exceptions.JSONDecodeError: If the response body does not
+            contain valid json.
         """
 
         if not self.encoding and self.content and len(self.content) > 3:
             # No encoding set. JSON RFC 4627 section 3 states we should expect
             # UTF-8, -16 or -32. Detect which one to use; If the detection or
-            # decoding fails, fall back to `self.text` (using chardet to make
+            # decoding fails, fall back to `self.text` (using charset_normalizer to make
             # a best guess).
             encoding = guess_json_utf(self.content)
             if encoding is not None:
@@ -915,7 +905,16 @@ class Response(object):
                     # and the server didn't bother to tell us what codec *was*
                     # used.
                     pass
-        return complexjson.loads(self.text, **kwargs)
+
+        try:
+            return complexjson.loads(self.text, **kwargs)
+        except JSONDecodeError as e:
+            # Catch JSON-related errors and raise as requests.JSONDecodeError
+            # This aliases json.JSONDecodeError and simplejson.JSONDecodeError
+            if is_py2: # e is a ValueError
+                raise RequestsJSONDecodeError(e.message)
+            else:
+                raise RequestsJSONDecodeError(e.msg, e.doc, e.pos)
 
     @property
     def links(self):
@@ -936,7 +935,7 @@ class Response(object):
         return l
 
     def raise_for_status(self):
-        """Raises stored :class:`HTTPError`, if one occurred."""
+        """Raises :class:`HTTPError`, if one occurred."""
 
         http_error_msg = ''
         if isinstance(self.reason, bytes):
